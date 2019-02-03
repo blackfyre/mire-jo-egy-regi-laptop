@@ -1,0 +1,193 @@
+version: '3.4'
+networks:
+  plexnet:
+    driver: bridge
+  backend:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.92.92.0/24
+services:
+  homeassistant:
+    container_name: hass
+    image: homeassistant/home-assistant:latest
+    volumes:
+      - ${CONFIG_MOUNT}/home-assistant:/config
+      - /etc/localtime:/etc/localtime:ro
+      - /var/lib/motion:/motion
+    restart: unless-stopped
+    network_mode: host
+    cap_add:
+      - NET_ADMIN  # Required for adding new routes
+    extra_hosts:
+      - "hass-db:172.92.92.92"
+    healthcheck:
+      test: "curl -Lf http://localhost:8123"
+      start_period: 6m
+      timeout: 15s
+      interval: 30s
+      retries: 3
+    depends_on:
+      - influxdb
+      - database
+    env_file:
+      - .env
+  database:
+    image: postgres:9
+    container_name: hass-db
+    restart: unless-stopped
+    networks:
+      backend:
+        ipv4_address: 172.92.92.92
+    ports:
+      - 5432:5432
+    volumes:
+      - ${DATA_MOUNT}/database/:/var/lib/postgresql/data
+    env_file:
+      - db.env
+    healthcheck:
+      test: "su postgres -c pg_isready"
+    env_file:
+      - .env
+  influxdb:
+    image: influxdb
+    container_name: hass-influxdb
+    restart: unless-stopped
+    env_file:
+      - influx.env
+      - .env
+    networks:
+      backend:
+        ipv4_address: 172.92.92.93
+    ports:
+      - 8086:8086
+    volumes:
+      - ${DATA_MOUNT}/influxdb/:/var/lib/influxdb
+      - ${CONFIG_MOUNT}/influxdb/:/var/lib/influxdb
+    healthcheck:
+      test: ["CMD", "curl", "-sI", "http://127.0.0.1:8086/ping"]
+      interval: 30s
+      timeout: 1s
+      retries: 24
+  grafana:
+    image: grafana/grafana
+    container_name: hass-grafana
+    restart: unless-stopped
+    volumes:
+      - ${DATA_MOUNT}/grafana/:/var/lib/grafana
+      - /etc/localtime:/etc/localtime:ro
+    ports:
+      - 3001:3000/tcp
+    env_file:
+      - grafana.env
+      - .env
+    networks:
+      backend:
+        ipv4_address: 172.92.92.94
+    depends_on:
+      - influxdb
+  mqtt:
+    image: toke/mosquitto
+    container_name: mosquitto
+    restart: unless-stopped
+    ports:
+      - 1883:1883
+      - 9001:9001
+    volumes:
+      - ${CONFIG_MOUNT}/mosquitto:/mosquitto/config
+      - ${DATA_MOUNT}/mosquitto:/mosquitto/data
+      - ${LOG_MOUNT}/mosquitto:/mosquitto/log
+  nodered:
+    image: nodered/node-red-docker:v8
+    restart: unless-stopped
+    container_name: node-red
+    ports:
+      - 1880:1880
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - ${DATA_MOUNT}/nodered:/data
+    depends_on:
+      - mqtt
+      - homeassistant
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:1880"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    env_file:
+      - .env
+  jackett:
+    image: linuxserver/jackett
+    container_name: jackett
+    restart: always
+    networks:
+      - plexnet
+    volumes:
+      - ${CONFIG_MOUNT}/jackett/config:/config
+      - ${CONFIG_MOUNT}/jackett/downloads:/downloads
+    ports:
+      - "9117:9117"
+    env_file:
+      - .env
+  radarr:
+    image: linuxserver/radarr
+    container_name: radarr
+    restart: always
+    ports:
+      - "7878:7878"
+    networks:
+      - plexnet
+    volumes:
+      - ${CONFIG_MOUNT}/radarr-config:/config
+      - ${NAS_MOUNT}/transmission:/downloads
+      - ${NAS_MOUNT}/movies:/movies
+    env_file:
+      - .env
+  sonarr:
+    image: linuxserver/sonarr
+    container_name: sonarr
+    restart: always
+    ports:
+      - "8989:8989"
+    networks:
+      - plexnet
+    volumes:
+      - ${CONFIG_MOUNT}/sonarr/:/config
+      - ${NAS_MOUNT}/series:/tv
+      - ${NAS_MOUNT}/transmission:/downloads
+    env_file:
+      - .env
+  portainer:
+    container_name: portainer
+    image: portainer/portainer
+    ports:
+      - 9000:9000
+    volumes:
+      - /opt/portainer:/data:rw
+      - /var/run/docker.sock:/var/run/docker.sock
+    restart: "no" # because the exit code(s) are wrong
+  organizr:
+    image: lsiocommunity/organizr
+    container_name: organizr
+    restart: on-failure
+    ports:
+      - 8811:80
+      - 8443:443
+    volumes:
+      - ${CONFIG_MOUNT}/organizr:/config
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    env_file:
+      - .env
+  dockermon:
+    container_name: dockermon
+    image: philhawthorne/ha-dockermon
+    ports:
+      - 8126:8126
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${CONFIG_MOUNT}/dockermon/:/config
+    restart: on-failure
