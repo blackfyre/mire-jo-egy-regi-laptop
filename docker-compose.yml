@@ -44,11 +44,10 @@ services:
     volumes:
       - ${DATA_MOUNT}/database/:/var/lib/postgresql/data
     env_file:
+      - .env
       - db.env
     healthcheck:
       test: "su postgres -c pg_isready"
-    env_file:
-      - .env
   influxdb:
     image: influxdb
     container_name: hass-influxdb
